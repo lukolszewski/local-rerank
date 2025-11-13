@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, conlist
 MODEL_NAME = 'jina-reranker-v3'
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/jina-reranker-v3-Q8_0.gguf")
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8081")
-VERSION = os.getenv("VERSION", "v3-gguf")
+VERSION = os.getenv("VERSION", "1.0.0")
 BUILD_ID = os.getenv("BUILD_ID", "unknown")
 COMMIT_SHA = os.getenv("COMMIT_SHA", "unknown")
 PORT = int(os.getenv("PORT", "80"))
@@ -56,8 +56,8 @@ class InfoResponse(BaseModel):
 # Create the FastAPI app
 ##
 app = FastAPI(
-    title="Jina Reranker v3 GGUF API",
-    description=f"API for reranking documents based on query relevance using {MODEL_NAME} (GGUF quantized)",
+    title="Local Reranker API",
+    description=f"Jina AI compatible reranking API using {MODEL_NAME} (llama.cpp with Jina Reranker v3 GGUF)",
     version=VERSION,
 )
 

@@ -1,9 +1,9 @@
 version: "3.9"
 
 services:
-  jina-reranker:
-    image: jina-reranker-v3:latest
-    container_name: jina-reranker
+  local-rerank:
+    image: local-rerank:latest
+    container_name: local-rerank
     restart: unless-stopped
     ports:
       - "8000:80"
