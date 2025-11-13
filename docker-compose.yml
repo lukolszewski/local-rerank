@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  jina-reranker:
+    image: jina-reranker-v3:latest
+    container_name: jina-reranker
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
