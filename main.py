@@ -1,20 +1,19 @@
 import os
-import subprocess
+import urllib.request
+import urllib.error
+import json
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, conlist
 
-from rerank import GGUFReranker
-
 ##
 # Load the config
 ##
 MODEL_NAME = 'jina-reranker-v3'
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/jina-reranker-v3-Q8_0.gguf")
-PROJECTOR_PATH = os.getenv("PROJECTOR_PATH", "/app/models/projector.safetensors")
-LLAMA_EMBEDDING_PATH = os.getenv("LLAMA_EMBEDDING_PATH", "/app/llama-embedding")
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8081")
 VERSION = os.getenv("VERSION", "v3-gguf")
 BUILD_ID = os.getenv("BUILD_ID", "unknown")
 COMMIT_SHA = os.getenv("COMMIT_SHA", "unknown")
@@ -27,7 +26,6 @@ PORT = int(os.getenv("PORT", "80"))
 class RerankRequest(BaseModel):
     query: str = Field(..., description="The search query")
     documents: conlist(str, min_length=1) = Field(..., description="List of documents to rerank")
-    batch_size: int = Field(32, description="Batch size for the model (not used in GGUF implementation)")
     top_n: Optional[int] = Field(None, description="Number of top results to return")
     return_documents: bool = Field(True, description="Whether to return document text in results")
     model: Optional[str] = Field(None, description="Model name (for API compatibility)")
@@ -52,7 +50,6 @@ class InfoResponse(BaseModel):
     build_id: str = BUILD_ID
     commit_sha: str = COMMIT_SHA
     model_path: str = MODEL_PATH
-    projector_path: str = PROJECTOR_PATH
 
 
 ##
@@ -63,23 +60,6 @@ app = FastAPI(
     description=f"API for reranking documents based on query relevance using {MODEL_NAME} (GGUF quantized)",
     version=VERSION,
 )
-
-##
-# Load the model
-##
-try:
-    print(f"Loading model from {MODEL_PATH}...")
-    print(f"Projector path: {PROJECTOR_PATH}")
-    print(f"llama-cli path: {LLAMA_EMBEDDING_PATH}")
-
-    reranker = GGUFReranker(
-        model_path=MODEL_PATH,
-        projector_path=PROJECTOR_PATH,
-        llama_embedding_path=LLAMA_EMBEDDING_PATH
-    )
-    print(f"Model {MODEL_NAME} loaded successfully")
-except Exception as e:
-    raise RuntimeError(f"Failed to load model: {str(e)}")
 
 
 ##
@@ -98,51 +78,70 @@ async def info():
 @app.post("/rerank", response_model=RerankResponse)
 async def rerank(request: RerankRequest = Body(...)):
     try:
-        # Call the GGUF reranker
-        results = reranker.rerank(
-            query=request.query,
-            documents=request.documents,
-            top_n=request.top_n,
-            return_embeddings=False
+        # Call llama-server's /rerank endpoint
+        payload = {
+            "query": request.query,
+            "documents": request.documents
+        }
+
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            f"{LLAMA_SERVER_URL}/rerank",
+            data=data,
+            headers={'Content-Type': 'application/json'}
         )
 
-        # Convert to response format
-        # The reranker already returns results sorted by relevance and filtered by top_n
-        formatted_results = []
-        for result in results:
-            formatted_result = {
-                "index": result["index"],
-                "relevance_score": result["relevance_score"]
-            }
-            if request.return_documents:
-                formatted_result["document"] = result["document"]
-            formatted_results.append(formatted_result)
+        with urllib.request.urlopen(req, timeout=120) as response:
+            result = json.loads(response.read().decode('utf-8'))
 
-        # Calculate total tokens (approximation based on text length)
-        total_tokens = len(request.query.split()) + sum(len(doc.split()) for doc in request.documents)
+            # llama-server returns: {"results": [{"index": 0, "relevance_score": 7.74}, ...]}
+            if 'results' not in result:
+                raise ValueError(f"Unexpected response format from llama-server: {result}")
 
-        # Build response matching Jina AI API format
-        response = RerankResponse(
-            model=request.model or MODEL_NAME,
-            object="list",
-            usage={"total_tokens": total_tokens},
-            results=[RerankResult(**r) for r in formatted_results]
-        )
+            results = result['results']
 
-        return response
+            # Sort by relevance_score descending
+            results.sort(key=lambda x: x['relevance_score'], reverse=True)
 
-    except subprocess.CalledProcessError as e_:
-        stderr_output = e_.stderr if hasattr(e_, 'stderr') and e_.stderr else 'No stderr available'
+            # Apply top_n filter if specified
+            if request.top_n is not None:
+                results = results[:request.top_n]
+
+            # Add document text if requested
+            formatted_results = []
+            for res in results:
+                formatted_result = {
+                    "index": res["index"],
+                    "relevance_score": res["relevance_score"]
+                }
+                if request.return_documents:
+                    formatted_result["document"] = request.documents[res["index"]]
+                formatted_results.append(formatted_result)
+
+            # Calculate total tokens (approximation)
+            total_tokens = len(request.query.split()) + sum(len(doc.split()) for doc in request.documents)
+
+            # Build response matching Jina AI API format
+            response = RerankResponse(
+                model=request.model or MODEL_NAME,
+                object="list",
+                usage={"total_tokens": total_tokens},
+                results=[RerankResult(**r) for r in formatted_results]
+            )
+
+            return response
+
+    except urllib.error.URLError as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error during reranking: Command failed with exit code {e_.returncode}. Stderr: {stderr_output}"
-        ) from e_
-    except Exception as e_:
+            detail=f"Failed to connect to llama-server at {LLAMA_SERVER_URL}: {e}"
+        )
+    except Exception as e:
         import traceback
         raise HTTPException(
             status_code=500,
-            detail=f"Error during reranking: {str(e_)}. Traceback: {traceback.format_exc()}"
-        ) from e_
+            detail=f"Error during reranking: {str(e)}. Traceback: {traceback.format_exc()}"
+        )
 
 
 if __name__ == "__main__":

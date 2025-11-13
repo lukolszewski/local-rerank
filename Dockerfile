@@ -15,21 +15,22 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY main.py /app/
-COPY models/rerank.py /app/
 COPY models/jina-reranker-v3-Q8_0.gguf /app/models/
-COPY models/projector.safetensors /app/models/
+COPY start.sh /app/
+
+# Make start script executable
+RUN chmod +x /app/start.sh && mkdir -p /var/log
 
 # Expose port 80
 EXPOSE 80
 
 # Set environment variables
 ENV MODEL_PATH=/app/models/jina-reranker-v3-Q8_0.gguf
-ENV PROJECTOR_PATH=/app/models/projector.safetensors
-ENV LLAMA_EMBEDDING_PATH=/app/llama-embedding
+ENV LLAMA_SERVER_URL=http://127.0.0.1:8081
 ENV PORT=80
 
 # Override the entrypoint from base image
 ENTRYPOINT []
 
-# Run uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
+# Run start script that launches both llama-server and uvicorn
+CMD ["/app/start.sh"]
